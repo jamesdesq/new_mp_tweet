@@ -1,0 +1,276 @@
+<?php
+/**
+ * @file
+ * Code for the mptweet feature.
+ */
+
+include_once 'mptweet.features.inc';
+
+//drupal_add_js(drupal_get_path('module', 'mptweet') . '/mptweet.js',  array('scope'=>'footer'));
+
+/**
+ * Implementation of hook_menu().
+ * Then defines the admin screens for the module
+ */
+
+function mptweet_menu() {
+
+// provides top level admin page and adds an item to the config page
+
+  $items['admin/config/mptweet'] = array(
+    'title' => 'Tweet your MP',
+    'description' => 'Settings for the tweet your MP module.',
+    'position' => 'right',
+    'weight' => -5,
+    'page callback' => 'system_admin_menu_block_page',
+    'access arguments' => array('administer site configuration'),
+    'file' => 'system.admin.inc',
+    'file path' => drupal_get_path('module', 'system'),
+   );
+
+// page where user can set Tweet content
+
+  $items['admin/config/mptweet/set_tweet'] = array( 
+    'title' => t('Tweet your MP'),   
+    'description' => t('Set the default message, no results message etc here'),
+    //'page callback' => 'mptweet_settings',    
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('mptweet_settings'),
+    'access arguments' => array('administer site configuration'),
+    'type' => MENU_NORMAL_ITEM,
+    'file' => 'mptweet.admin.inc',
+  ); 
+
+// page where user can set API credentials
+
+  $items['admin/config/mptweet/api_credentials'] = array( 
+    'title' => t('Tweet your MP API credentials'),   
+    'description' => t('Set your They Work for You API credentials here'),
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('mptweet_api_credentials'),
+    'access arguments' => array('administer site configuration'),
+    'type' => MENU_NORMAL_ITEM,
+    'file' => 'mptweet.admin.inc',
+  );
+  return $items;
+} 
+
+##################
+# Form functions #
+##################
+
+// holder function for form functions. Checks which page the form should show
+
+function mptweet_form($form, &$form_state) {
+
+  if (isset($form_state['storage']['page_two'])) {   
+    return mptweet_form_page_2($form, $form_state); 
+ }
+
+  else {  
+    return mptweet_form_page_1($form, $form_state); 
+  }
+}
+
+// submit handler
+
+function mptweet_form_submit($form, &$form_state) { 
+
+  if ($form_state['clicked_button']['#id'] == 'edit-next') {
+    $form_state['storage']['page_two'] = TRUE; 
+    $form_state['storage']['page_one_values'] = $form_state['values'];
+    $form_state["rebuild"] = TRUE;   
+  }
+
+  else {
+    //drupal_set_message('Your form has been submitted');
+    unset ($form_state['storage']); 
+    $form_state['redirect'] = 'node'; 
+  }
+} 
+
+// Form functions, called fom the mp_tweet_form holder function, above
+
+// first page of form asks for postcode
+
+function mptweet_form_page_1($form, &$form_state) { 
+
+  $form['postcode']=array(
+    '#type'=>'textfield',
+    '#title'=>t('Lookup your MP using your postcode'),
+    '#description'=>t('Enter your postcode here')
+  );
+
+  $form['next']=array(
+    '#type'=>'submit',
+    '#value'=>t('Next')
+  );
+
+  return $form;
+}
+
+// second page of form takes postcode and recovers MP's Twitter handle, assuming all is well. 
+
+function mptweet_form_page_2($form, &$form_state) { 
+
+  $handle = "";
+
+  // recovers the Twitter handle for the MP, using getTwitterHandle, which is defined below
+
+  dpm($form_state['input']['postcode']);
+
+  if (isset($form_state['input']['postcode'])) { 
+    $handle = getTwitterHandle($form_state['input']['postcode']);       
+  }  
+
+  $tweet = "You haven't defined your Tweet yet - go to admin/config/mptweet to do so";
+
+  // looks for the mp_tweet_form value in the variables table
+
+  if (null != variable_get('mptweet_tweet_form')) { 
+    $tweet = variable_get('mptweet_tweet_form'); 
+  };
+
+  dpm($handle);
+
+  if ($handle != NULL) { 
+    $form['title'] = array(
+      '#markup' => t("<p>Tweet to $handle</p>")
+    ); 
+    $form['content'] = array(
+      '#markup' => t("<p>$tweet</p>")         
+    );
+    $form['postcript'] = array( 
+      '#markup' => t('<p>Don\'t worry, you can change Tweet once you\'ve clicked Next, below</p>')
+    );
+
+    // we need to strip the @ out of the handle because that's what the Twitter API wants
+      
+    $handle = substr($handle, 1);
+
+    // creates the Twitter URL
+
+    $form['submit']= array(
+        '#markup'=>'
+        <div id = "lazy-container">
+          <a 
+            class="twitter-mention-button" 
+            id = "twitter-mention-button" 
+            href="https://twitter.com/intent/tweet?screen_name=' . $handle . '&text='  . $tweet .
+            '"target="_blank">Next
+          </a></div>', 
+      );
+    } 
+  
+    else $form['error_message'] = array(
+      '#markup' => "<p>It looks as though your MP doesn't have a Twitter account. Why not campaign via email, instead</p>", 
+    );
+ 
+  return $form;
+} 
+
+function getTwitterHandle($postcode) { 
+
+  $postcode = str_replace(" ", "+", $postcode); 
+
+  if (NULL != variable_get('mpweet_api_credentials')) dpm('You need to set the They Work for You API key.'); 
+
+    else { 
+  
+      // make the TWFY connection
+
+      $apikey = variable_get('mptweet_api_credentials'); 
+
+      $url = "http://www.theyworkforyou.com/api/getMP?key=$apikey&postcode=$postcode&output=js";
+
+      $result = curlWrapper($url);
+        
+      $mp = $result['first_name'] . "-" . $result['last_name'];
+
+      // now we've got the MP's name from They Work For You, we can construct the URL to recover the Twiter handle from the view
+        
+      $url = $GLOBALS['base_url'] . "/mpdata/$mp"; 
+  
+      //  Initiate curl
+  
+      $result = curlWrapper($url); 
+      
+      $handle = NULL;
+
+      if (isset($result['nodes'][0]['node']['twitterhandle'])) {  
+
+        $handle = $result['nodes'][0]['node']['twitterhandle'];
+
+      } 
+
+  return $handle;
+
+  }   
+} 
+
+/** 
+ * cURL wrapper function, because we use it in similar ways twice
+ */
+
+function curlWrapper($url) { 
+
+  $ch = curl_init();
+
+  curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false); // Disable SSL verification
+          
+  curl_setopt($ch, CURLOPT_RETURNTRANSFER, true); // Will return the response, if false it print the response
+          
+  curl_setopt($ch, CURLOPT_URL, $url); // Set the url
+
+  $result = curl_exec($ch); // Execute
+
+  curl_close($ch); // Closing
+
+  return json_decode($result, true); // return as a JSON object
+;
+} 
+
+############################## 
+# Functions for creating:    #
+# - MP details content type  #
+# - View and view JSON       #
+# - Blocks                   #
+##############################
+
+/**
+ * Implements hook_views_api()
+ * Currently following this tutorial http://websmiths.co/blog/drupal-views-tutorials-exporting-views-code
+ * Notes to self - after following this tutorial and clearing the views cache my view still didn't seem to load - so I disabled and re-enabled the module. That seemed to work
+ **/
+
+function mptweet_views_api() { 
+  return array('api' => 3.0); 
+} 
+
+/**
+ * Declare what blocks are provided by this module.
+ * Implements hook_block_info().
+ */
+function mptweet_block_info(){
+  $blocks = array();	    
+    $blocks['mptweet_form_block'] = array(
+      'info' => t('MP Tweet form'),
+      'cache' => DRUPAL_CACHE_GLOBAL, // @TODO check this...
+    );
+  return $blocks;
+}
+ 
+/**
+ * Define what our block is going to look like.
+ * Implements hook_block_view().
+ */
+function mptweet_block_view($delta = ''){
+  $block = array();
+    switch($delta) {     
+      case 'mptweet_form_block':   // let's test this later - does it match the blocks name given in block_info? 
+        $block['subject'] = t('Tweet your MP');      
+        $block['content'] = drupal_get_form('mptweet_form');
+      break;
+    } 
+    return $block;
+}
